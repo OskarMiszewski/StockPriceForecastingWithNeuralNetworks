@@ -1,0 +1,96 @@
+# import bibliotek
+import pandas as pd
+from statsmodels.tsa.ar_model import AutoReg
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
+from keras.models import Sequential
+from keras.layers import LSTM, Dense, Dropout
+import numpy as np
+import datetime as dt
+import pandas_datareader as web
+import yfinance as yf
+
+# Załadowanie danych cen akcji spółki
+company = 'AAPL'
+
+start = dt.datetime(1990,1,1)
+end = dt.datetime(2023,6,1)
+
+data = yf.download(company, start, end)
+
+# Podział danych na zbiór treningowy i testowy
+train_data = data['1990':'2021']
+test_data = data['2021':'2022']
+
+# Normalizacja danych
+scaler = MinMaxScaler(feature_range=(0, 1))
+#scaled_data = scaler.fit_transform(data['Close'].values.reshape(-1,1))
+scaler_close = MinMaxScaler(feature_range=(0, 1))
+scaled_train_close = scaler_close.fit_transform(train_data['Close'].values.reshape(-1, 1))
+scaled_test_close = scaler_close.transform(test_data['Close'].values.reshape(-1, 1))
+scaler.fit(train_data)
+scaler.fit(test_data)
+#scaled_train_data = scaler.fit_transform(train_data)
+#scaled_test_data = scaler.transform(test_data)
+#scaled_train_data = np.hstack(scaled_train_close)
+#scaled_test_data = np.hstack(scaled_test_close)
+
+# Określenie liczby poprzednich dni do uwzględnienia
+look_back = 150
+
+# Przygotowanie danych treningowych
+X_train, y_train = [], []
+for i in range(look_back, len(scaled_train_close)):
+    X_train.append(scaled_train_close[i-look_back:i])
+    y_train.append(scaled_train_close[i])
+X_train, y_train = np.array(X_train), np.array(y_train)
+
+# Konfiguracja modelu LSTM
+model = Sequential()
+model.add(LSTM(50, return_sequences=True, input_shape=(look_back, 1)))
+model.add(LSTM(50))
+model.add(Dense(1))
+
+# Kompilacja i trenowanie modelu
+model.compile(optimizer='adam', loss='mean_squared_error')
+model.fit(X_train, y_train, epochs=15, batch_size=32)
+
+# Testowanie modelu
+X_test, y_test = [], []
+for i in range(look_back, len(test_data)):
+    X_test.append(scaled_test_close[i-look_back:i, :])
+    y_test.append(scaled_test_close[i, 0])
+X_test, y_test = np.array(X_test), np.array(y_test)
+
+predictionsLSTM = model.predict(X_test)
+tested_prices = scaler_close.inverse_transform(predictionsLSTM[:, 0].reshape(-1, 1))
+
+# Generowanie prognoz na następny rok
+last_sequence = scaled_train_close[-look_back:]  # Ostatnia sekwencja danych treningowych
+predictions = []  # Przechowywanie prognoz
+
+for _ in range(60):  # Generowanie prognoz na każdy dzień przez 60 dni
+    input_data = last_sequence.reshape(1, look_back, 1)
+    prediction = model.predict(input_data)
+    predictions.append(prediction[0])
+    last_sequence = np.append(last_sequence[1:], prediction[0])
+
+# Odwrócenie normalizacji danych
+predictions = scaler_close.inverse_transform(predictions)
+
+# Generowanie dat dla prognoz
+start_date = train_data.index[-1] + pd.DateOffset(days=1)
+end_date = start_date + pd.DateOffset(days=60)
+forecast_dates = pd.date_range(start=start_date, periods=len(predictions), freq='D')
+
+# Wykres prognozowanych cen na następny rok
+plt.plot(test_data.index[look_back:], tested_prices[:, 0], label='Przewidywane ceny LSTM')
+plt.plot(forecast_dates, predictions, label='Prognozowane ceny Multi-step')
+#plt.plot(test_data.index, test_data['Close'].values, label='Rzeczywiste ceny')
+plt.gca().xaxis.set_tick_params(labelsize=8)
+actual_data = data['2021':'2022']
+plt.plot(actual_data.index, actual_data['Close'], label='Rzeczywiste ceny')
+plt.xlabel('Data')
+plt.ylabel('Cena')
+plt.legend()
+plt.show()
